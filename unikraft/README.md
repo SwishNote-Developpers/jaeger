@@ -91,9 +91,10 @@ Four things, each found by a boot that failed:
   selects `.with_http()` and its frontend proxies JSON to `/v1/traces`, so gRPC
   would be surface with no traffic behind it.
 * **The service is persistent and owns the domain.** A service auto-created by
-  `unikraft run` dies with its instance and the next deploy invents a new name,
-  which breaks any CNAME aimed at it. `jaeger-otlp` is created explicitly, so the
-  hostname survives redeploys.
+  `unikraft run` dies with its instance, and the next deploy invents a new name.
+  `jaeger-otlp` is created explicitly, so the domain and its certificate survive
+  redeploys. DNS points at the metro (`sin.unikraft.app`) rather than at any
+  service, since the proxy routes on the request's domain.
 * **UI.** The `jaeger-ui` submodule is uninitialised here, so the binary embeds
   the placeholder page and logs `ui assets not embedded in the binary`. Run
   `make build-ui` before `build.sh` for the real UI — it is embedded via

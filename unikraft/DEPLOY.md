@@ -48,9 +48,15 @@ Only 443 is published, forwarding to the OTLP/HTTP receiver on 4318. There is no
 traffic behind it.
 
 Attaching a custom domain creates a certificate in `pending` state. It is issued
-once the domain resolves to Unikraft Cloud — point a CNAME at
-`jaeger-otlp.sin.unikraft.app`. That name keeps resolving whether or not it is
-listed among the service's domains.
+once the domain resolves to Unikraft Cloud — point a CNAME at the metro itself:
+
+    otlp.swishnote.com.  CNAME  sin.unikraft.app.
+
+The metro name is the target, not the service's own
+`jaeger-otlp.sin.unikraft.app`. Both resolve to the same proxy
+(`proxy.sin.unikraft.cloud`), because the proxy picks the service from the
+domain in the request rather than from the name it was reached by — so the
+metro-level name is the one that does not depend on the service at all.
 
 `--services` and `--domains` **replace** rather than append. `unikraft services
 edit <name> --services 443:4318/http+tls` drops every other port; pass the whole
@@ -140,9 +146,20 @@ processing data.`:
 
     unikraft instances logs jaeger --tail 50
 
-Then post a span. 
+Then post a span.
 
-    FQDN=spring-butterfly-4c7lnt57.sin.unikraft.app
+While the certificate is still `pending` and DNS has not been switched, aim curl
+at the metro's address but keep the service's own domain as the SNI, so the
+proxy can route it — that checks the whole path before any DNS change:
+
+    IP=$(dig +short sin.unikraft.app | tail -1)
+    curl -k --resolve otlp.swishnote.com:443:$IP \
+        https://otlp.swishnote.com/v1/traces ...
+
+`-k` is only for the pending certificate. Once DNS is switched and the
+certificate is issued, drop both flags and use the hostname directly:
+
+    FQDN=otlp.swishnote.com
     NOW=$(date +%s)000000000
 
     curl -sS -w '\nHTTP %{http_code}\n' -X POST "https://$FQDN/v1/traces" \

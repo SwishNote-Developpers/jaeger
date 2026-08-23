@@ -1,0 +1,68 @@
+# Local-only variant of config.yaml, using memory storage.
+#
+# Badger mmaps its memtable, and the initrd's ramfs does not support mmap
+# ("operation not supported" opening /data/keys/00001.mem), so the Badger
+# configuration cannot run on the local qemu target. It works on Unikraft Cloud,
+# where /data is a virtiofs volume.
+#
+# The local target exists to smoke-test the build, not to hold data, so it uses
+# the memory backend instead. Run it with:
+#
+#   kraft run --rm -M 2048Mi -p 16686:16686 -p 4318:4318 . \
+#       -- --config /config-memory.yaml
+
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      service.name: jaeger
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+    logs:
+      level: info
+
+extensions:
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 0.0.0.0:13133
+
+  jaeger_query:
+    storage:
+      traces: memstore
+    http:
+      endpoint: 0.0.0.0:16686
+    grpc:
+      endpoint: 0.0.0.0:16685
+
+  jaeger_storage:
+    backends:
+      memstore:
+        memory:
+          max_traces: 100000
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: memstore

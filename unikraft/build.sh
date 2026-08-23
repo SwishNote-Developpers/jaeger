@@ -43,12 +43,19 @@ if readelf -d "$out" 2>/dev/null | grep -qi needed; then
 fi
 readelf -l "$out" | grep -q "$interp" || { echo "error: PT_INTERP was not set to $interp" >&2; exit 1; }
 
+# Mount point for the Badger volume, which has to exist in a read-only rootfs.
+# Locally there is no volume and this stays a directory in the initrd's ramfs:
+# Badger works, but the data goes away with the instance.
+mkdir -p "$here/rootfs/data"
+touch "$here/rootfs/data/.keep"
+
 # The Docker build context cannot reach outside cloud/, so stage the rootfs there
 # as hardlinks rather than copies — the binary is ~80MB.
-mkdir -p "$here/cloud/rootfs/lib"
+mkdir -p "$here/cloud/rootfs/lib" "$here/cloud/rootfs/data"
 ln -f "$here/rootfs/jaeger"                    "$here/cloud/rootfs/jaeger"
 ln -f "$here/rootfs/config.yaml"               "$here/cloud/rootfs/config.yaml"
 ln -f "$here/rootfs/lib/ld-linux-x86-64.so.2"  "$here/cloud/rootfs/lib/ld-linux-x86-64.so.2"
+ln -f "$here/rootfs/data/.keep"                "$here/cloud/rootfs/data/.keep"
 
 printf 'built %s (%s bytes), interpreter %s staged from %s\n' \
     "$out" "$(stat -c %s "$out")" "$interp" "$host_interp"

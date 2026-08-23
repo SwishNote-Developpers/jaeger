@@ -1,7 +1,8 @@
 # Minimal all-in-one config for the unikernel build.
 #
 # Trimmed down from cmd/jaeger/internal/all-in-one.yaml:
-#   * memory storage only — the rootfs is read-only, so Badger is out.
+#   * Badger on a mounted volume — the rootfs itself is read-only, so the
+#     database lives at /data, which is where the volume is mounted.
 #   * OTLP receiver only — the legacy jaeger/zipkin receivers (including the
 #     Thrift UDP ports) are dropped to keep the number of listeners the
 #     binary-compat layer has to service small.
@@ -37,7 +38,7 @@ extensions:
 
   jaeger_query:
     storage:
-      traces: memstore
+      traces: badgerstore
     http:
       endpoint: 0.0.0.0:16686
     grpc:
@@ -45,9 +46,19 @@ extensions:
 
   jaeger_storage:
     backends:
-      memstore:
-        memory:
-          max_traces: 100000
+      badgerstore:
+        badger:
+          directories:
+            keys: /data/keys
+            values: /data/values
+          # ephemeral would put the database in a temp dir and throw it away on
+          # restart, which is the whole thing this configuration exists to avoid.
+          ephemeral: false
+          ttl:
+            # The volume is 256MiB and Badger fails writes once it is full, so
+            # retention is bounded by time to keep it under that. Lower this
+            # first if the volume fills.
+            spans: 72h
 
 receivers:
   otlp:
@@ -62,4 +73,4 @@ processors:
 
 exporters:
   jaeger_storage_exporter:
-    trace_storage: memstore
+    trace_storage: badgerstore

@@ -20,7 +20,18 @@ Everything below was run against metro `sin` with the namespace
 time of writing: 16 instances, 1 vCPU each, 4.0GiB memory, 1.0GiB of volume
 space.
 
-## 1. Start BuildKit
+## 1. Create the volume
+
+Traces live in Badger on a persistent volume, so the volume has to exist before
+the first deploy. Once created it outlives instances — skip this step on
+redeploys.
+
+    unikraft volumes create --name jaeger-data --size 256 --metro sin
+
+`--size` is in MiB. Check what the metro has left first: `unikraft quotas` shows
+both the per-metro volume budget and the per-volume ceiling.
+
+## 2. Start BuildKit
 
 `unikraft build` refuses to build the rootfs without a Docker or BuildKit
 daemon. `buildkitd.sh` starts a rootless one and is safe to re-run:
@@ -31,7 +42,7 @@ daemon. `buildkitd.sh` starts a rootless one and is safe to re-run:
 It prints the `export` line to copy. The daemon is not a service — it dies with
 your session, so expect to run this again next time.
 
-## 2. Build the binary
+## 3. Build the binary
 
     ./build.sh
 
@@ -48,7 +59,7 @@ build the assets first; they are embedded into the binary by `go:embed`:
     make build-ui
     ./build.sh
 
-## 3. Build and push the image
+## 4. Build and push the image
 
     cd cloud
     unikraft build . --output okuyama-hiroyuki/jaeger:latest
@@ -63,17 +74,22 @@ Confirm the image landed:
 
     unikraft images ls | grep jaeger
 
-## 4. Deploy
+## 5. Deploy
 
     unikraft run \
         --metro sin \
         --image okuyama-hiroyuki/jaeger:latest \
         --name jaeger \
         -m 2048M \
+        -v jaeger-data:/data \
         -p 4317:4317/tls \
         -p 4318:4318/tls
 
 Notes on the flags:
+
+* `-v jaeger-data:/data` mounts the volume where `config.yaml` points Badger.
+  Without it the instance still boots, but writes go to the read-only rootfs and
+  storage initialisation fails.
 
 * `-m` is lowercase, and the suffix is `M`/`G` — `-M` is not a flag and `2048Mi`
   is rejected as an invalid suffix.
@@ -88,7 +104,7 @@ Notes on the flags:
 The command prints the instance UUID and the generated FQDN, e.g.
 `spring-butterfly-4c7lnt57.sin.unikraft.app`.
 
-## 5. Verify
+## 6. Verify
 
 State first — `starting` means it has not finished booting, `stopped` means it
 booted and exited:
@@ -100,7 +116,7 @@ processing data.`:
 
     unikraft instances logs jaeger --tail 50
 
-Then post a span. Replace the FQDN with the one from step 4:
+Then post a span. Replace the FQDN with the one from step 5:
 
     FQDN=spring-butterfly-4c7lnt57.sin.unikraft.app
     NOW=$(date +%s)000000000
@@ -131,7 +147,7 @@ publish. Either add `-p 443:16686/http+tls` and query
 `https://$FQDN/api/v3/services`, or check the round trip locally — see
 [Running locally](#running-locally).
 
-## 6. Redeploy after a change
+## 7. Redeploy after a change
 
 There is no in-place image swap. Rebuild, push, and replace the instance:
 
@@ -139,19 +155,22 @@ There is no in-place image swap. Rebuild, push, and replace the instance:
     cd cloud && unikraft build . --output okuyama-hiroyuki/jaeger:latest
     unikraft instances rm jaeger
     unikraft run --metro sin --image okuyama-hiroyuki/jaeger:latest \
-        --name jaeger -m 2048M -p 4317:4317/tls -p 4318:4318/tls
+        --name jaeger -m 2048M -v jaeger-data:/data \
+        -p 4317:4317/tls -p 4318:4318/tls
 
 The FQDN is generated per service and **changes on every redeploy**. Anything
 pointing at the old name has to be updated.
 
-Storage is in-memory, so every redeploy starts with an empty trace store.
+Traces survive this: they live on the volume, not in the instance. Removing the
+instance does not remove the volume.
 
-## 7. Stop and clean up
+## 8. Stop and clean up
 
     unikraft instances stop jaeger      # keep it, stop billing for runtime
     unikraft instances start jaeger     # bring it back
     unikraft instances rm jaeger        # delete instance and its service
     unikraft images rm okuyama-hiroyuki/jaeger:latest
+    unikraft volumes rm jaeger-data     # deletes the traces too
 
 ## Troubleshooting
 
@@ -168,7 +187,7 @@ the `ld-linux-x86-64.so.2` staged next to it.
 
 **`buildkit not found; please start a docker or buildkit daemon`**
 
-Step 1 was skipped, or `BUILDKIT_HOST` is not exported into the shell running
+Step 2 was skipped, or `BUILDKIT_HOST` is not exported into the shell running
 `unikraft build`.
 
 **`buildkitd: rootless mode requires to be executed as the mapped root in a user namespace`**
@@ -183,7 +202,7 @@ No OCI runtime on PATH. `./buildkitd.sh` locates one in the nix store;
 
 **`401 unauthorized to access repository: official/jaeger`**
 
-`--output` was given without a namespace. See step 3.
+`--output` was given without a namespace. See step 4.
 
 **`parsing arguments: unknown flag --metro`**
 
@@ -193,6 +212,14 @@ subcommands operate across metros.
 **`--memory: invalid suffix: 'mi'`**
 
 Use `-m 2048M`, not `-m 2048Mi`.
+
+**`While opening memtable: /data/keys/00001.mem err: ... operation not supported`**
+
+Badger mmaps its memtable and the filesystem under `/data` does not support it.
+On Unikraft Cloud this means the volume was not mounted — check for
+`-v jaeger-data:/data` and that `unikraft instances get jaeger` lists the volume.
+On the local qemu target it is expected: the initrd's ramfs has no mmap, so use
+`-- --config /config-memory.yaml`.
 
 **Instance state goes `starting` → `stopped` with no application logs**
 
@@ -206,10 +233,17 @@ the quicker way to check a change end to end:
 
     ./build.sh
     kraft run --rm -d -M 2048Mi \
-        -p 16686:16686 -p 4317:4317 -p 4318:4318 -n jaeger-uk .
+        -p 16686:16686 -p 4317:4317 -p 4318:4318 -n jaeger-uk . \
+        -- --config /config-memory.yaml
     kraft logs jaeger-uk
 
-Post a span to `http://localhost:4318/v1/traces` as in step 5, then read it
+The `--config` override is required. The default `config.yaml` puts traces in
+Badger, which mmaps its memtable; the initrd's ramfs does not support mmap, so
+Badger fails to open with `operation not supported` on
+`/data/keys/00001.mem`. `config-memory.yaml` uses the memory backend instead,
+which is enough for smoke-testing a build.
+
+Post a span to `http://localhost:4318/v1/traces` as in step 6, then read it
 back:
 
     curl -sS http://localhost:16686/api/v3/services

@@ -10,20 +10,25 @@ Makefile or CI.
 
 Working on both targets.
 
-* **Local (qemu), `Kraftfile`** — boots, serves, and answers queries. Verified
-  end to end: a span posted to `:4318` comes back from
+* **Local (qemu), `Kraftfile`** — boots, serves, and answers queries, but only
+  with `config-memory.yaml`; Badger cannot run here (see below). Verified end to
+  end: a span posted to `:4318` comes back from
   `http://localhost:16686/api/v3/services`.
 * **Unikraft Cloud, `cloud/Kraftfile`** — deployed to metro `sin` as instance
-  `jaeger`, OTLP exposed over TLS on 4317/4318. Verified as far as the exposed
-  surface allows: OTLP/HTTP returns `200 {"partialSuccess":{}}`. The query port
-  is deliberately not published there, so read-back is only checked locally.
+  `jaeger`, OTLP exposed over TLS on 4317/4318, Badger on a 256MiB volume mounted
+  at `/data`. Verified: OTLP/HTTP returns `200 {"partialSuccess":{}}`, and 50
+  spans survive a restart — Badger reopens with `All 1 tables opened` and
+  `Set nextTxnTs to 50`. The query port is deliberately not published there, so
+  read-back is only checked locally.
 
 ## Layout
 
     Kraftfile          local: spec v0.7, runtime base:latest, target qemu/x86_64
-    rootfs/config.yaml minimal all-in-one config: OTLP in, memory storage, query
+    rootfs/config.yaml minimal all-in-one config: OTLP in, Badger on /data, query
+    rootfs/config-memory.yaml  local-only variant; memory storage instead of Badger
     rootfs/jaeger      the binary (built by build.sh, not checked in)
     rootfs/lib/        the dynamic loader, staged by build.sh
+    rootfs/data/       mount point for the Badger volume
     cloud/Kraftfile    Unikraft Cloud: base-compat:latest, kraftcloud/x86_64
     cloud/Dockerfile   scratch image holding the staged rootfs
     cloud/rootfs/      hardlinks to ../rootfs (the Docker context cannot escape cloud/)
@@ -69,8 +74,13 @@ Four things, each found by a boot that failed:
 
 ## Configuration notes
 
-* **Memory storage only.** A cpio/erofs rootfs is read-only, which rules out
-  Badger. Persisting traces means an external backend or a writable volume.
+* **Badger needs a volume, and mmap.** The rootfs is read-only, so the database
+  lives at `/data`, where a Unikraft Cloud volume is mounted. Badger mmaps its
+  memtable, and the local target's initrd ramfs does not support mmap — it fails
+  with `operation not supported` opening `/data/keys/00001.mem`. That is why the
+  local target has its own memory-storage config. Retention is bounded by
+  `ttl.spans` rather than by size, because Badger fails writes once the volume is
+  full; lower it before anything else if the volume fills.
 * **Bind 0.0.0.0.** Jaeger defaults to localhost, which is unreachable from
   outside the guest; `rootfs/config.yaml` sets every endpoint explicitly. Same
   reason `cmd/jaeger/Dockerfile` sets `JAEGER_LISTEN_HOST=0.0.0.0`.

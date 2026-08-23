@@ -13,3 +13,7 @@ FROM scratch
 COPY rootfs/jaeger /jaeger
 COPY rootfs/config.yaml /config.yaml
 COPY rootfs/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2
+
+# Mount point for the Badger volume. It has to exist in the image: the rootfs is
+# read-only, so nothing can create it at boot.
+COPY rootfs/data /data

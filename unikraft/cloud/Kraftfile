@@ -1,0 +1,23 @@
+# Jaeger all-in-one for Unikraft Cloud.
+#
+# This is the shape the upstream example uses — base-compat, an erofs rootfs
+# built from a Dockerfile — which is published only for kraftcloud/x86_64.
+# ../Kraftfile is the local qemu variant.
+#
+# Build and deploy from this directory (see ../README.md):
+#   ../build.sh
+#   unikraft build . --output jaeger:latest
+#   unikraft run --metro fra --image jaeger:latest -M 2048Mi ...
+
+spec: v0.7
+
+runtime: base-compat:latest
+
+targets:
+  - kraftcloud/x86_64
+
+rootfs:
+  source: ./Dockerfile
+  format: erofs
+
+cmd: ["/jaeger", "--config", "/config.yaml"]

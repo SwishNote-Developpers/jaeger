@@ -1,0 +1,65 @@
+# Minimal all-in-one config for the unikernel build.
+#
+# Trimmed down from cmd/jaeger/internal/all-in-one.yaml:
+#   * memory storage only — the rootfs is read-only, so Badger is out.
+#   * OTLP receiver only — the legacy jaeger/zipkin receivers (including the
+#     Thrift UDP ports) are dropped to keep the number of listeners the
+#     binary-compat layer has to service small.
+#   * every endpoint binds 0.0.0.0; the unikernel's own loopback is not
+#     reachable from the host.
+
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      service.name: jaeger
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+    logs:
+      level: info
+
+extensions:
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 0.0.0.0:13133
+
+  jaeger_query:
+    storage:
+      traces: memstore
+    http:
+      endpoint: 0.0.0.0:16686
+    grpc:
+      endpoint: 0.0.0.0:16685
+
+  jaeger_storage:
+    backends:
+      memstore:
+        memory:
+          max_traces: 100000
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: memstore

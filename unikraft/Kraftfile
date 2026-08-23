@@ -1,0 +1,24 @@
+# Jaeger all-in-one as a Unikraft unikernel, local qemu target.
+#
+# Derived from unikraft-cloud/examples/httpserver-go1.21/Kraftfile, with two
+# departures forced by running locally rather than on Unikraft Cloud:
+#
+#   * runtime is base:latest, not base-compat:latest — base-compat is published
+#     only for kraftcloud/x86_64. See cloud/Kraftfile for that target.
+#   * rootfs is a plain directory, not a Dockerfile — kraft packs it into an
+#     initrd directly, with no BuildKit daemon in the way. erofs is read-only
+#     anyway, so it would rule out any writable backend either way.
+#
+# The rootfs holds the binary, its config, and the dynamic loader the binary's
+# PT_INTERP names; build.sh explains why the loader has to be there.
+
+spec: v0.7
+
+runtime: base:latest
+
+targets:
+  - qemu/x86_64
+
+rootfs: ./rootfs
+
+cmd: ["/jaeger", "--config", "/config.yaml"]

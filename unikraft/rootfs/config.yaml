@@ -3,9 +3,9 @@
 # Trimmed down from cmd/jaeger/internal/all-in-one.yaml:
 #   * Badger on a mounted volume — the rootfs itself is read-only, so the
 #     database lives at /data, which is where the volume is mounted.
-#   * OTLP receiver only — the legacy jaeger/zipkin receivers (including the
-#     Thrift UDP ports) are dropped to keep the number of listeners the
-#     binary-compat layer has to service small.
+#   * OTLP/HTTP receiver only — the legacy jaeger/zipkin receivers (including
+#     the Thrift UDP ports) and the OTLP/gRPC listener are dropped to keep the
+#     number of listeners the binary-compat layer has to service small.
 #   * every endpoint binds 0.0.0.0; the unikernel's own loopback is not
 #     reachable from the host.
 
@@ -61,10 +61,11 @@ extensions:
             spans: 72h
 
 receivers:
+  # OTLP/HTTP only. Nothing sends OTLP/gRPC here — the Tauri client selects
+  # .with_http() and its frontend proxy POSTs JSON to /v1/traces — so the gRPC
+  # listener on 4317 would be surface with no traffic behind it.
   otlp:
     protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
 

@@ -15,10 +15,12 @@ Working on both targets.
   end: a span posted to `:4318` comes back from
   `http://localhost:16686/api/v3/services`.
 * **Unikraft Cloud, `cloud/Kraftfile`** — deployed to metro `sin` as instance
-  `jaeger`, OTLP exposed over TLS on 4317/4318, Badger on a 256MiB volume mounted
-  at `/data`. Verified: OTLP/HTTP returns `200 {"partialSuccess":{}}`, and 50
-  spans survive a restart — Badger reopens with `All 1 tables opened` and
-  `Set nextTxnTs to 50`. The query port is deliberately not published there, so
+  `jaeger` on the persistent service `jaeger-otlp`, which publishes 443 to the
+  OTLP/HTTP receiver and carries the `otlp.swishnote.com` domain. Badger lives on
+  a 256MiB volume at `/data`. Verified: a span posted to 443 with the right SNI
+  returns `200 {"partialSuccess":{}}`, and 50 spans survive both a restart and a
+  full instance replacement — Badger reopens with `All 1 tables opened` and
+  `Set nextTxnTs to 50`. The query port is deliberately not published, so
   read-back is only checked locally.
 
 ## Layout
@@ -84,8 +86,14 @@ Four things, each found by a boot that failed:
 * **Bind 0.0.0.0.** Jaeger defaults to localhost, which is unreachable from
   outside the guest; `rootfs/config.yaml` sets every endpoint explicitly. Same
   reason `cmd/jaeger/Dockerfile` sets `JAEGER_LISTEN_HOST=0.0.0.0`.
-* **OTLP only.** The legacy jaeger/zipkin receivers and the Thrift UDP ports are
-  dropped to keep the number of listeners small.
+* **OTLP/HTTP only.** The legacy jaeger/zipkin receivers, the Thrift UDP ports
+  and the OTLP/gRPC listener on 4317 are all dropped. The client this serves
+  selects `.with_http()` and its frontend proxies JSON to `/v1/traces`, so gRPC
+  would be surface with no traffic behind it.
+* **The service is persistent and owns the domain.** A service auto-created by
+  `unikraft run` dies with its instance and the next deploy invents a new name,
+  which breaks any CNAME aimed at it. `jaeger-otlp` is created explicitly, so the
+  hostname survives redeploys.
 * **UI.** The `jaeger-ui` submodule is uninitialised here, so the binary embeds
   the placeholder page and logs `ui assets not embedded in the binary`. Run
   `make build-ui` before `build.sh` for the real UI — it is embedded via

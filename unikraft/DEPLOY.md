@@ -31,7 +31,32 @@ redeploys.
 `--size` is in MiB. Check what the metro has left first: `unikraft quotas` shows
 both the per-metro volume budget and the per-volume ceiling.
 
-## 2. Start BuildKit
+## 2. Create the service
+
+The service group owns the published ports and the domain, and a named one is
+persistent: it survives `instances rm`, so the hostname the DNS points at stays
+put across redeploys. A service auto-created by `unikraft run` does not — it is
+deleted with its instance and the next deploy invents a new name, breaking any
+CNAME aimed at it.
+
+    unikraft services create --name jaeger-otlp --metro sin \
+        --services 443:4318/http+tls \
+        --domains otlp.swishnote.com
+
+Only 443 is published, forwarding to the OTLP/HTTP receiver on 4318. There is no
+4317: nothing sends OTLP/gRPC here, so the listener would be surface with no
+traffic behind it.
+
+Attaching a custom domain creates a certificate in `pending` state. It is issued
+once the domain resolves to Unikraft Cloud — point a CNAME at
+`jaeger-otlp.sin.unikraft.app`. That name keeps resolving whether or not it is
+listed among the service's domains.
+
+`--services` and `--domains` **replace** rather than append. `unikraft services
+edit <name> --services 443:4318/http+tls` drops every other port; pass the whole
+set each time, and use `--dry-run` first to see the resulting list.
+
+## 3. Start BuildKit
 
 `unikraft build` refuses to build the rootfs without a Docker or BuildKit
 daemon. `buildkitd.sh` starts a rootless one and is safe to re-run:
@@ -42,7 +67,7 @@ daemon. `buildkitd.sh` starts a rootless one and is safe to re-run:
 It prints the `export` line to copy. The daemon is not a service — it dies with
 your session, so expect to run this again next time.
 
-## 3. Build the binary
+## 4. Build the binary
 
     ./build.sh
 
@@ -59,7 +84,7 @@ build the assets first; they are embedded into the binary by `go:embed`:
     make build-ui
     ./build.sh
 
-## 4. Build and push the image
+## 5. Build and push the image
 
     cd cloud
     unikraft build . --output okuyama-hiroyuki/jaeger:latest
@@ -74,7 +99,7 @@ Confirm the image landed:
 
     unikraft images ls | grep jaeger
 
-## 5. Deploy
+## 6. Deploy
 
     unikraft run \
         --metro sin \
@@ -82,8 +107,7 @@ Confirm the image landed:
         --name jaeger \
         -m 2048M \
         -v jaeger-data:/data \
-        -p 4317:4317/tls \
-        -p 4318:4318/tls
+        --service jaeger-otlp
 
 Notes on the flags:
 
@@ -93,18 +117,18 @@ Notes on the flags:
 
 * `-m` is lowercase, and the suffix is `M`/`G` — `-M` is not a flag and `2048Mi`
   is rejected as an invalid suffix.
-* `-p <public>:<guest>/<handler>`. `tls` terminates TLS and forwards the plain
-  stream, which is what OTLP gRPC and OTLP/HTTP both want. Use
-  `-p 443:16686/http+tls` if you also want the query API and UI published.
+* `--service jaeger-otlp` joins the service from step 2 instead of creating a
+  throwaway one. Use `-p` only for a scratch deployment you do not intend to
+  point DNS at.
 * 2048M is the working figure. The ~80MB binary is loaded into guest memory and
   otelcol's Go heap sits on top; the default is far too small.
 * `--metro` belongs to `run` only. `unikraft instances …` and `unikraft images
   …` do not accept it and will fail with `unknown flag --metro`.
 
-The command prints the instance UUID and the generated FQDN, e.g.
-`spring-butterfly-4c7lnt57.sin.unikraft.app`.
+The instance inherits the service's ports and domains, so the reachable host is
+`otlp.swishnote.com` (once DNS is switched) and `jaeger-otlp.sin.unikraft.app`.
 
-## 6. Verify
+## 7. Verify
 
 State first — `starting` means it has not finished booting, `stopped` means it
 booted and exited:
@@ -116,12 +140,12 @@ processing data.`:
 
     unikraft instances logs jaeger --tail 50
 
-Then post a span. Replace the FQDN with the one from step 5:
+Then post a span. 
 
     FQDN=spring-butterfly-4c7lnt57.sin.unikraft.app
     NOW=$(date +%s)000000000
 
-    curl -sS -w '\nHTTP %{http_code}\n' -X POST "https://$FQDN:4318/v1/traces" \
+    curl -sS -w '\nHTTP %{http_code}\n' -X POST "https://$FQDN/v1/traces" \
         -H 'Content-Type: application/json' -d '{
       "resourceSpans": [{
         "resource": {"attributes": [
@@ -147,7 +171,7 @@ publish. Either add `-p 443:16686/http+tls` and query
 `https://$FQDN/api/v3/services`, or check the round trip locally — see
 [Running locally](#running-locally).
 
-## 7. Redeploy after a change
+## 8. Redeploy after a change
 
 There is no in-place image swap. Rebuild, push, and replace the instance:
 
@@ -155,20 +179,18 @@ There is no in-place image swap. Rebuild, push, and replace the instance:
     cd cloud && unikraft build . --output okuyama-hiroyuki/jaeger:latest
     unikraft instances rm jaeger
     unikraft run --metro sin --image okuyama-hiroyuki/jaeger:latest \
-        --name jaeger -m 2048M -v jaeger-data:/data \
-        -p 4317:4317/tls -p 4318:4318/tls
+        --name jaeger -m 2048M -v jaeger-data:/data --service jaeger-otlp
 
-The FQDN is generated per service and **changes on every redeploy**. Anything
-pointing at the old name has to be updated.
-
-Traces survive this: they live on the volume, not in the instance. Removing the
+The service is persistent, so the domain, the certificate and the hostname all
+survive; nothing in DNS has to change. Traces survive too: they live on the volume, not in the instance. Removing the
 instance does not remove the volume.
 
-## 8. Stop and clean up
+## 9. Stop and clean up
 
     unikraft instances stop jaeger      # keep it, stop billing for runtime
     unikraft instances start jaeger     # bring it back
-    unikraft instances rm jaeger        # delete instance and its service
+    unikraft instances rm jaeger        # delete the instance; the service stays
+    unikraft services rm jaeger-otlp    # releases the domain and certificate
     unikraft images rm okuyama-hiroyuki/jaeger:latest
     unikraft volumes rm jaeger-data     # deletes the traces too
 
@@ -187,7 +209,7 @@ the `ld-linux-x86-64.so.2` staged next to it.
 
 **`buildkit not found; please start a docker or buildkit daemon`**
 
-Step 2 was skipped, or `BUILDKIT_HOST` is not exported into the shell running
+Step 3 was skipped, or `BUILDKIT_HOST` is not exported into the shell running
 `unikraft build`.
 
 **`buildkitd: rootless mode requires to be executed as the mapped root in a user namespace`**
@@ -202,7 +224,7 @@ No OCI runtime on PATH. `./buildkitd.sh` locates one in the nix store;
 
 **`401 unauthorized to access repository: official/jaeger`**
 
-`--output` was given without a namespace. See step 4.
+`--output` was given without a namespace. See step 5.
 
 **`parsing arguments: unknown flag --metro`**
 
@@ -243,7 +265,7 @@ Badger fails to open with `operation not supported` on
 `/data/keys/00001.mem`. `config-memory.yaml` uses the memory backend instead,
 which is enough for smoke-testing a build.
 
-Post a span to `http://localhost:4318/v1/traces` as in step 6, then read it
+Post a span to `http://localhost:4318/v1/traces` as in step 7, then read it
 back:
 
     curl -sS http://localhost:16686/api/v3/services

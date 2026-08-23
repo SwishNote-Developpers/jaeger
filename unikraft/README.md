@@ -99,6 +99,11 @@ Four things, each found by a boot that failed:
   the placeholder page and logs `ui assets not embedded in the binary`. Run
   `make build-ui` before `build.sh` for the real UI — it is embedded via
   `go:embed`, so it needs no rootfs entry either way.
+* **Scale to zero, statefully.** The instance suspends after a minute idle and
+  resumes on the next span, in under 100ms — the cold boot that created it took
+  9.09s. `stateful=true` keeps its memory across the suspend, which Badger needs:
+  it runs with `SyncWrites: false`, so a plain stop would drop whatever had not
+  reached disk.
 * **Memory sizing.** The default 64Mi is nowhere near enough; the ~80MB binary is
   itself loaded into guest memory. 2GiB is the working figure, and is also the
   per-instance ceiling on the current Unikraft Cloud quota.

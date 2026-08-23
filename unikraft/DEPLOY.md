@@ -113,7 +113,8 @@ Confirm the image landed:
         --name jaeger \
         -m 2048M \
         -v jaeger-data:/data \
-        --service jaeger-otlp
+        --service jaeger-otlp \
+        --scale-to-zero policy=on,stateful=true,cooldown-time=60000
 
 Notes on the flags:
 
@@ -128,6 +129,8 @@ Notes on the flags:
   point DNS at.
 * 2048M is the working figure. The ~80MB binary is loaded into guest memory and
   otelcol's Go heap sits on top; the default is far too small.
+* `--scale-to-zero` is explained in its own section below. It can also be set
+  afterwards with `unikraft instances edit jaeger --scale-to-zero …`.
 * `--metro` belongs to `run` only. `unikraft instances …` and `unikraft images
   …` do not accept it and will fail with `unknown flag --metro`.
 
@@ -188,7 +191,41 @@ publish. Either add `-p 443:16686/http+tls` and query
 `https://$FQDN/api/v3/services`, or check the round trip locally — see
 [Running locally](#running-locally).
 
-## 8. Redeploy after a change
+## 8. Scale to zero
+
+The instance suspends after a minute with no traffic and resumes on the next
+request:
+
+    unikraft instances edit jaeger \
+        --scale-to-zero policy=on,stateful=true,cooldown-time=60000
+
+`cooldown-time` is in milliseconds; `unikraft instances get jaeger` renders the
+value back as `1m0s`.
+
+**`stateful=true` is the part that matters here.** It suspends the instance with
+its memory intact instead of stopping it. Badger runs with `SyncWrites: false`,
+so recent writes sit in a memtable that has not reached disk yet — a
+non-stateful stop would drop them. It also makes resuming cheap, because there
+is no process to start and no database to reopen.
+
+That distinction matters more for a telemetry endpoint than for a web app. An
+OTLP client is fire-and-forget: if a resume outran the exporter's timeout, the
+batch would be dropped and nothing would say so. Measured against this
+deployment from Japan:
+
+| | round trip |
+| --- | --- |
+| first request after `standby` | 1.201s |
+| warm requests | 1.101s / 1.094s / 1.160s |
+
+The resume costs somewhere under 100ms; the rest is the trip to Singapore and
+the TLS handshake. `unikraft instances get jaeger` reports `boot-time: 6.6ms`
+after a resume, against 9.09s for the cold boot that first created it.
+
+To watch it happen: leave it idle and poll `unikraft instances get jaeger` until
+`state` reads `standby`, then send a span and watch it return to `running`.
+
+## 9. Redeploy after a change
 
 There is no in-place image swap. Rebuild, push, and replace the instance:
 
@@ -202,7 +239,7 @@ The service is persistent, so the domain, the certificate and the hostname all
 survive; nothing in DNS has to change. Traces survive too: they live on the volume, not in the instance. Removing the
 instance does not remove the volume.
 
-## 9. Stop and clean up
+## 10. Stop and clean up
 
     unikraft instances stop jaeger      # keep it, stop billing for runtime
     unikraft instances start jaeger     # bring it back

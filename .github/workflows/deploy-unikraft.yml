@@ -1,0 +1,58 @@
+name: Deploy to Unikraft Cloud
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# デプロイ同士が競合しないよう直列化する (実行中のものは止めない)
+concurrency:
+  group: deploy-unikraft
+  cancel-in-progress: false
+
+env:
+  UKC_ORG: swishnote
+  INSTANCE_NAME: jaeger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # build.sh は patchelf で PT_INTERP を書き換え、readelf で検証する
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends patchelf
+
+      - name: Install Unikraft CLI and login
+        uses: unikraft/setup-action@v1
+        with:
+          token: ${{ secrets.UKC_TOKEN }}
+          organization: ${{ env.UKC_ORG }}
+
+      # Go バイナリを PIE で作り、ローダーごと unikraft/cloud/rootfs/ に配置する。
+      # UI は OTLP 受信ポートしか公開していないため組み込まない
+      - name: Build jaeger binary
+        run: ./unikraft/build.sh
+
+      - name: Build and publish unikernel image
+        id: build
+        working-directory: unikraft/cloud
+        run: |
+          IMAGE="${UKC_ORG}/${INSTANCE_NAME}:${GITHUB_SHA}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          unikraft build . --output "$IMAGE"
+
+      - name: Deploy instance
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          unikraft instances edit "$INSTANCE_NAME" --image "$IMAGE"
+          unikraft instances restart "$INSTANCE_NAME"

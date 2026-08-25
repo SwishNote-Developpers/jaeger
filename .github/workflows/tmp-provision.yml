@@ -1,0 +1,108 @@
+# 一時的なワークフロー。ボリューム・サービス・インスタンスを最初に1回だけ
+# 作るための単発実行用。手順は unikraft/DEPLOY.md に準拠する。
+# 作成が済んだら削除する。以降の更新は deploy-unikraft.yml が行う。
+name: tmp - provision instance
+
+on:
+  workflow_dispatch:
+
+env:
+  UKC_ORG: swishnote
+  INSTANCE_NAME: jaeger
+  SERVICE_NAME: jaeger-otlp
+  VOLUME_NAME: jaeger-data
+  DOMAIN: otlp.swishnote.com
+  METRO: sin
+  SCALE_TO_ZERO: policy=on,stateful=true,cooldown-time=60000
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends patchelf
+
+      - name: Install Unikraft CLI and login
+        uses: unikraft/setup-action@v1
+        with:
+          token: ${{ secrets.UKC_TOKEN }}
+          organization: ${{ env.UKC_ORG }}
+
+      - name: Show existing resources
+        run: |
+          echo "--- quotas ---";    unikraft quotas
+          echo "--- instances ---"; unikraft instances list
+          echo "--- services ---";  unikraft services list
+          echo "--- volumes ---";   unikraft volumes list
+
+      # トレースは Badger がボリュームに書くので、インスタンスより先に要る。
+      # ボリュームはインスタンスを消しても残る (--size は MiB)
+      - name: Create volume
+        run: |
+          if unikraft volumes get "$VOLUME_NAME" >/dev/null 2>&1; then
+            echo "ボリューム $VOLUME_NAME は作成済みです"
+          else
+            unikraft volumes create --name "$VOLUME_NAME" --size 256 --metro "$METRO"
+          fi
+
+      # 名前付きサービスは instances rm を跨いで残るので、DNS の向き先が
+      # 再デプロイで変わらない。公開するのは OTLP/HTTP の 4318 だけで、
+      # 4317 (gRPC) は送信側がいないため出さない
+      - name: Create service
+        run: |
+          if unikraft services get "$SERVICE_NAME" >/dev/null 2>&1; then
+            echo "サービス $SERVICE_NAME は作成済みです"
+          else
+            unikraft services create \
+              --name "$SERVICE_NAME" \
+              --metro "$METRO" \
+              --services 443:4318/http+tls \
+              --domains "$DOMAIN"
+          fi
+
+      - name: Build jaeger binary
+        run: ./unikraft/build.sh
+
+      - name: Build and publish unikernel image
+        id: build
+        working-directory: unikraft/cloud
+        run: |
+          IMAGE="${UKC_ORG}/${INSTANCE_NAME}:${GITHUB_SHA}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          unikraft build . --output "$IMAGE"
+
+      # -m は 2048M。80MB のバイナリがゲストメモリに載り、その上に
+      # otelcol の Go ヒープが乗るため既定値では足りない。
+      # stateful=true は Badger が SyncWrites:false で動いており、
+      # 非 stateful な停止だと未書き込みのメモリ上の書き込みが失われるため
+      - name: Create instance
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          if unikraft instances get "$INSTANCE_NAME" >/dev/null 2>&1; then
+            echo "::error::インスタンス $INSTANCE_NAME は既に存在します。deploy-unikraft.yml を使ってください"
+            exit 1
+          fi
+          unikraft run \
+            --metro "$METRO" \
+            --name "$INSTANCE_NAME" \
+            --image "$IMAGE" \
+            -m 2048M \
+            -v "${VOLUME_NAME}:/data" \
+            --service "$SERVICE_NAME" \
+            --scale-to-zero "$SCALE_TO_ZERO"
+
+      - name: Show result
+        if: always()
+        run: |
+          unikraft instances get "$INSTANCE_NAME" || true
+          unikraft services get "$SERVICE_NAME" || true
